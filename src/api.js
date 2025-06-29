@@ -1,0 +1,3 @@
+export async function callAPI(builder, topic, prompt, circuitBreaker) {
+    // Kod callAPI z <xaiArtifact>...
+}

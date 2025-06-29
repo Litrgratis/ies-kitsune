@@ -1,0 +1,6 @@
+export function renderStorytellingTimeline(history) {
+    // Kod timeline z <xaiArtifact>...
+}
+export function initKitsune(studio) {
+    // Kod triggera kontekstowego...
+}

@@ -1,0 +1,3 @@
+app.get('/api/sse/updates', (req, res) => {
+    // Kod SSE z <xaiArtifact>...
+});
