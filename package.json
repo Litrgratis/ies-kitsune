@@ -1,0 +1,11 @@
+{
+  "name": "ies-kitsune",
+  "version": "1.0.0",
+  "description": "IES/Kitsune project for problem-solving",
+  "dependencies": {
+    "express": "^4.17.1"
+  },
+  "scripts": {
+    "start": "node src/mock_server.js"
+  }
+}
