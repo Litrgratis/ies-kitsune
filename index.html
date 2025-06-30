@@ -307,12 +307,40 @@
         // Initialize SSE connection
         initSSE();
         
-        // Load saved theme
-        const savedTheme = localStorage.getItem('theme');
-        if (savedTheme === 'light') {
-            document.documentElement.classList.remove('dark');
-            document.getElementById('current-theme').textContent = 'light';
+        // Load saved theme from database
+        async function loadSavedTheme() {
+            try {
+                const userProfile = await dbManager.getUserProfile();
+                if (userProfile && userProfile.preferences && userProfile.preferences.theme) {
+                    const theme = userProfile.preferences.theme;
+                    if (theme === 'light') {
+                        document.documentElement.classList.remove('dark');
+                        document.getElementById('current-theme').textContent = 'light';
+                    } else {
+                        document.documentElement.classList.add('dark');
+                        document.getElementById('current-theme').textContent = 'dark';
+                    }
+                } else {
+                    // Default to dark theme if no preference found
+                    document.documentElement.classList.add('dark');
+                    document.getElementById('current-theme').textContent = 'dark';
+                }
+            } catch (error) {
+                console.warn('Could not load theme from database, using default:', error);
+                // Fallback to localStorage if database fails
+                const savedTheme = localStorage.getItem('theme');
+                if (savedTheme === 'light') {
+                    document.documentElement.classList.remove('dark');
+                    document.getElementById('current-theme').textContent = 'light';
+                } else {
+                    document.documentElement.classList.add('dark');
+                    document.getElementById('current-theme').textContent = 'dark';
+                }
+            }
         }
+        
+        // Initialize theme loading
+        loadSavedTheme();
 
         // Initialize templates and recommendations after DOM is ready
         setTimeout(() => {

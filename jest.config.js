@@ -1,10 +1,15 @@
 export default {
   testEnvironment: 'node',
-  preset: 'jest-environment-node',
   testMatch: [
     '<rootDir>/tests/**/*.js'
   ],
   transform: {},
+  extensionsToTreatAsEsm: ['.js'],
+  globals: {
+    'ts-jest': {
+      useESM: true
+    }
+  },
   collectCoverage: true,
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'html'],
@@ -12,7 +17,7 @@ export default {
     'src/**/*.js',
     '!src/mock_server.js'
   ],
-  moduleNameMapping: {
+  moduleNameMapper: {
     '^(\\.{1,2}/.*)\\.js$': '$1'
   }
 };

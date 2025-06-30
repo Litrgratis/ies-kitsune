@@ -68,11 +68,38 @@ export function updateProgressBar(stage, progress) {
     }
 }
 
-export function toggleTheme() {
+import { DatabaseSessionManager } from './database_session_manager.js';
+
+export async function toggleTheme() {
     const currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    
+    // Update UI immediately
     document.documentElement.classList.toggle('dark');
-    localStorage.setItem('theme', currentTheme === 'light' ? 'dark' : 'light');
-    document.getElementById('current-theme').textContent = currentTheme === 'light' ? 'dark' : 'light';
+    document.getElementById('current-theme').textContent = newTheme;
+    
+    try {
+        const dbManager = new DatabaseSessionManager();
+        const userId = 'default_user'; // Replace with actual user ID when user system is implemented
+        
+        // Get current user profile
+        let profile = await dbManager.getUserProfile(userId);
+        if (!profile) {
+            profile = { preferences: {} };
+        }
+        
+        // Update theme preference
+        profile.preferences.theme = newTheme;
+        
+        // Save to database
+        await dbManager.saveUserProfile(userId, profile);
+        
+        console.log(`Theme changed to ${newTheme} and saved to database`);
+    } catch (error) {
+        console.error('Failed to save theme to database, falling back to localStorage:', error);
+        // Fallback to localStorage if database fails
+        localStorage.setItem('theme', newTheme);
+    }
 }
 
 export function initSSE() {

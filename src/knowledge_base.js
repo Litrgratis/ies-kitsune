@@ -5,12 +5,30 @@
 
 export class KnowledgeBaseSystem {
     constructor() {
+        this.dbManager = new DatabaseSessionManager();
         this.knowledgeBase = this.initializeKnowledgeBase();
-        this.userContributions = this.loadUserContributions();
-        this.searchIndex = this.buildSearchIndex();
-        this.favorites = this.loadFavorites();
+        this.userContributions = [];
+        this.searchIndex = [];
+        this.favorites = [];
+        this.userId = 'user_1'; // Default user ID - should come from auth system
         
-        this.initializeKnowledgeBaseUI();
+        this.initializeAsync();
+    }
+
+    /**
+     * Initialize the system asynchronously
+     */
+    async initializeAsync() {
+        try {
+            await this.loadUserContributions();
+            await this.loadFavorites();
+            this.searchIndex = this.buildSearchIndex();
+            this.initializeKnowledgeBaseUI();
+        } catch (error) {
+            console.error('Failed to initialize Knowledge Base:', error);
+            // Fallback to show UI even if DB loading fails
+            this.initializeKnowledgeBaseUI();
+        }
     }
 
     /**
@@ -516,20 +534,20 @@ export class KnowledgeBaseSystem {
     attachContentCardHandlers() {
         // Read content
         document.querySelectorAll('.read-content').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const card = e.target.closest('.kb-card');
                 const itemId = card.dataset.itemId;
-                this.showContentReader(itemId);
+                await this.showContentReader(itemId);
             });
         });
 
         // Favorite toggle
         document.querySelectorAll('.favorite-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
+            btn.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 const itemId = e.target.dataset.itemId;
-                this.toggleFavorite(itemId);
+                await this.toggleFavorite(itemId);
             });
         });
 
@@ -547,13 +565,13 @@ export class KnowledgeBaseSystem {
     /**
      * Pokazuje content reader
      */
-    showContentReader(itemId) {
+    async showContentReader(itemId) {
         const item = this.findContentById(itemId);
         if (!item) return;
 
         // Track view
         item.views++;
-        this.saveViewStatistics(itemId);
+        await this.saveViewStatistics(itemId);
 
         const modal = document.createElement('div');
         modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
@@ -610,8 +628,8 @@ export class KnowledgeBaseSystem {
             this.markAsHelpful(itemId);
             modal.remove();
         });
-        modal.querySelector('#add-to-favorites').addEventListener('click', () => {
-            this.toggleFavorite(itemId);
+        modal.querySelector('#add-to-favorites').addEventListener('click', async () => {
+            await this.toggleFavorite(itemId);
         });
         
         modal.addEventListener('click', (e) => {
@@ -685,15 +703,15 @@ export class KnowledgeBaseSystem {
         document.body.appendChild(modal);
         
         modal.querySelector('#cancel-kb-add').addEventListener('click', () => modal.remove());
-        modal.querySelector('#save-kb-content').addEventListener('click', () => {
-            this.saveUserContribution(modal);
+        modal.querySelector('#save-kb-content').addEventListener('click', async () => {
+            await this.saveUserContribution(modal);
         });
     }
 
     /**
      * Zapisuje user contribution
      */
-    saveUserContribution(modal) {
+    async saveUserContribution(modal) {
         const title = modal.querySelector('#kb-title').value.trim();
         const category = modal.querySelector('#kb-new-category').value;
         const description = modal.querySelector('#kb-description').value.trim();
@@ -723,13 +741,21 @@ export class KnowledgeBaseSystem {
             author: 'You'
         };
 
-        this.userContributions.push(newContent);
-        this.saveUserContributions();
-        this.updateSearchIndex();
-        this.renderKnowledgeContent();
-        
-        this.showNotification(`"${title}" added to knowledge base! 🎉`, 'success');
-        modal.remove();
+        try {
+            // Save to database
+            await this.dbManager.saveKnowledgeContribution(this.userId, newContent);
+            
+            // Update local state
+            this.userContributions.push(newContent);
+            this.updateSearchIndex();
+            this.renderKnowledgeContent();
+            
+            this.showNotification(`"${title}" added to knowledge base! 🎉`, 'success');
+            modal.remove();
+        } catch (error) {
+            console.error('Failed to save contribution:', error);
+            this.showNotification('Failed to save contribution. Please try again.', 'error');
+        }
     }
 
     // Utility functions
@@ -827,15 +853,24 @@ export class KnowledgeBaseSystem {
         this.attachContentCardHandlers();
     }
 
-    toggleFavorite(itemId) {
+    async toggleFavorite(itemId) {
         const index = this.favorites.indexOf(itemId);
-        if (index > -1) {
-            this.favorites.splice(index, 1);
-        } else {
-            this.favorites.push(itemId);
+        const isFavorite = index > -1;
+        
+        try {
+            if (isFavorite) {
+                this.favorites.splice(index, 1);
+                await this.dbManager.removeKnowledgeFavorite(this.userId, itemId);
+            } else {
+                this.favorites.push(itemId);
+                await this.dbManager.addKnowledgeFavorite(this.userId, itemId);
+            }
+            
+            this.renderKnowledgeContent(); // Refresh to update favorite stars
+        } catch (error) {
+            console.error('Failed to update favorite:', error);
+            this.showNotification('Failed to update favorite. Please try again.', 'error');
         }
-        this.saveFavorites();
-        this.renderKnowledgeContent(); // Refresh to update favorite stars
     }
 
     markAsHelpful(itemId) {
@@ -866,28 +901,32 @@ export class KnowledgeBaseSystem {
     }
 
     // Storage functions
-    loadUserContributions() {
-        const stored = localStorage.getItem('ies_user_knowledge');
-        return stored ? JSON.parse(stored) : [];
+    async loadUserContributions() {
+        try {
+            const contributions = await this.dbManager.getUserKnowledgeContributions(this.userId);
+            this.userContributions = contributions || [];
+        } catch (error) {
+            console.error('Failed to load user contributions:', error);
+            this.userContributions = [];
+        }
     }
 
-    saveUserContributions() {
-        localStorage.setItem('ies_user_knowledge', JSON.stringify(this.userContributions));
+    async loadFavorites() {
+        try {
+            const favorites = await this.dbManager.getUserKnowledgeFavorites(this.userId);
+            this.favorites = favorites || [];
+        } catch (error) {
+            console.error('Failed to load favorites:', error);
+            this.favorites = [];
+        }
     }
 
-    loadFavorites() {
-        const stored = localStorage.getItem('ies_kb_favorites');
-        return stored ? JSON.parse(stored) : [];
-    }
-
-    saveFavorites() {
-        localStorage.setItem('ies_kb_favorites', JSON.stringify(this.favorites));
-    }
-
-    saveViewStatistics(itemId) {
-        const stats = JSON.parse(localStorage.getItem('ies_kb_stats') || '{}');
-        stats[itemId] = (stats[itemId] || 0) + 1;
-        localStorage.setItem('ies_kb_stats', JSON.stringify(stats));
+    async saveViewStatistics(itemId) {
+        try {
+            await this.dbManager.saveKnowledgeViewStat(this.userId, itemId);
+        } catch (error) {
+            console.error('Failed to save view statistics:', error);
+        }
     }
 
     showNotification(message, type = 'info') {

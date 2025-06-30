@@ -13,12 +13,13 @@ export class AnalyticsDashboard {
             liveConsensus: 0,
             performanceTrend: []
         };
+        this.dbManager = new DatabaseSessionManager();
         
         this.initializeCharts();
     }
 
     /**
-     * Inicjalizuje wykresy i komponenty analityczne
+     * Initialize charts and analytics components
      */
     initializeCharts() {
         // Create analytics container if not exists
@@ -28,10 +29,33 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Tworzy główny dashboard analityczny
+     * Create main analytics dashboard
      */
     createDashboard() {
-        const dashboardHTML = `
+        try {
+            const dashboardHTML = this.generateDashboardTemplate();
+            
+            // Insert dashboard after existing content
+            const container = document.querySelector('.container');
+            if (!container) {
+                throw new Error('Container element not found');
+            }
+            container.insertAdjacentHTML('beforeend', dashboardHTML);
+
+            // Initialize event listeners
+            this.initializeEventListeners();
+            this.initializeSimpleCharts();
+        } catch (error) {
+            console.error('Failed to create analytics dashboard:', error);
+            this.createFallbackDashboard();
+        }
+    }
+
+    /**
+     * Generate dashboard HTML template
+     */
+    generateDashboardTemplate() {
+        return `
             <div id="analytics-dashboard" class="mt-6 bg-gray-800 p-6 rounded-lg">
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-xl font-semibold">📊 Advanced Analytics</h2>
@@ -180,18 +204,28 @@ export class AnalyticsDashboard {
                 </div>
             </div>
         `;
-
-        // Insert dashboard after existing content
-        const container = document.querySelector('.container');
-        container.insertAdjacentHTML('beforeend', dashboardHTML);
-
-        // Initialize event listeners
-        this.initializeEventListeners();
-        this.initializeSimpleCharts();
     }
 
     /**
-     * Inicjalizuje event listenery dla dashboard
+     * Create fallback dashboard when main creation fails
+     */
+    createFallbackDashboard() {
+        const container = document.querySelector('.container') || document.body;
+        container.insertAdjacentHTML('beforeend', `
+            <div id="analytics-dashboard" class="mt-6 bg-gray-800 p-6 rounded-lg">
+                <div class="text-center text-red-400">
+                    <h2 class="text-xl font-semibold mb-4">📊 Analytics Dashboard</h2>
+                    <p>Analytics dashboard failed to load. Basic functionality is available.</p>
+                    <button onclick="location.reload()" class="mt-4 px-4 py-2 bg-blue-600 rounded hover:bg-blue-700">
+                        Retry
+                    </button>
+                </div>
+            </div>
+        `);
+    }
+
+    /**
+     * Initialize event listeners for dashboard
      */
     initializeEventListeners() {
         // Real-time toggle
@@ -216,7 +250,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Inicjalizuje proste wykresy ASCII/CSS
+     * Initialize simple ASCII/CSS charts
      */
     initializeSimpleCharts() {
         // Create simple performance chart using CSS
@@ -251,9 +285,9 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Rejestruje nową sesję w analytics
+     * Record a new session in analytics
      */
-    recordSession(session) {
+    async recordSession(session) {
         const sessionRecord = {
             id: Date.now(),
             problem: session.problem.substring(0, 50) + '...',
@@ -268,16 +302,41 @@ export class AnalyticsDashboard {
             success: session.metrics.avgQuality >= 7.5 && session.metrics.finalConsensus >= 0.75
         };
 
-        this.sessions.push(sessionRecord);
-        this.updateDashboard();
-        this.updateSessionsTable();
-        
-        // Store in localStorage
-        localStorage.setItem('ies_analytics', JSON.stringify(this.sessions));
+        // Save analytics data to database
+        try {
+            await this.dbManager.saveAnalytics({
+                session_id: session.id || sessionRecord.id,
+                user_id: session.userId || 'anonymous',
+                problem_text: session.problem,
+                start_time: new Date(session.startTime),
+                end_time: new Date(sessionRecord.endTime),
+                total_time_ms: session.metrics.totalTime,
+                avg_quality: session.metrics.avgQuality,
+                final_consensus: session.metrics.finalConsensus,
+                iterations_used: session.iterations.length,
+                breakthroughs: session.metrics.breakthroughs,
+                efficiency: session.metrics.efficiency,
+                success: sessionRecord.success,
+                metadata: {
+                    roles_performance: session.roles || {},
+                    session_type: session.type || 'standard'
+                }
+            });
+
+            this.sessions.push(sessionRecord);
+            this.updateDashboard();
+            this.updateSessionsTable();
+        } catch (error) {
+            console.error('Failed to save analytics data:', error);
+            // Fallback: still update UI even if database save fails
+            this.sessions.push(sessionRecord);
+            this.updateDashboard();
+            this.updateSessionsTable();
+        }
     }
 
     /**
-     * Aktualizuje główne wskaźniki dashboard
+     * Update main dashboard metrics
      */
     updateDashboard() {
         if (this.sessions.length === 0) return;
@@ -298,7 +357,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Aktualizuje trendy w KPI cards
+     * Update trends in KPI cards
      */
     updateTrends() {
         if (this.sessions.length < 2) return;
@@ -319,7 +378,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Aktualizuje tabelę sesji
+     * Update sessions table with latest data
      */
     updateSessionsTable() {
         const tbody = document.getElementById('sessions-table-body');
@@ -365,7 +424,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Aktualizuje metryki w czasie rzeczywistym
+     * Update real-time metrics during active session
      */
     updateRealTimeMetrics(metrics) {
         this.realTimeMetrics = { ...this.realTimeMetrics, ...metrics };
@@ -377,7 +436,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Aktualizuje wskaźniki live
+     * Update live performance indicators
      */
     updateLiveIndicators() {
         // Update AI roles performance
@@ -402,7 +461,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Przełącza tryb real-time
+     * Toggle real-time monitoring mode
      */
     toggleRealTimeMode() {
         this.isRealTimeActive = !this.isRealTimeActive;
@@ -420,7 +479,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Rozpoczyna aktualizacje real-time
+     * Start real-time updates interval
      */
     startRealTimeUpdates() {
         this.realTimeInterval = setInterval(() => {
@@ -429,7 +488,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Zatrzymuje aktualizacje real-time
+     * Stop real-time updates interval
      */
     stopRealTimeUpdates() {
         if (this.realTimeInterval) {
@@ -438,7 +497,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Eksportuje dane analityczne
+     * Export analytics data as JSON file
      */
     exportAnalytics() {
         const data = {
@@ -462,7 +521,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Filtruje sesje według zakresu czasowego
+     * Filter sessions by time range
      */
     filterSessions(timeRange) {
         // Implementation for filtering sessions
@@ -470,7 +529,7 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Wyszukuje sesje
+     * Search sessions by query string
      */
     searchSessions(query) {
         // Implementation for searching sessions
@@ -478,14 +537,34 @@ export class AnalyticsDashboard {
     }
 
     /**
-     * Ładuje dane z localStorage
+     * Load analytics data from database on startup
      */
-    loadStoredData() {
-        const stored = localStorage.getItem('ies_analytics');
-        if (stored) {
-            this.sessions = JSON.parse(stored);
+    async loadStoredData() {
+        try {
+            // Load analytics data from database
+            const analyticsData = await this.dbManager.getAnalytics();
+            
+            // Transform database records to session format
+            this.sessions = analyticsData.map(record => ({
+                id: record.id,
+                problem: record.problem_text ? record.problem_text.substring(0, 50) + '...' : 'Unknown problem',
+                startTime: record.start_time ? new Date(record.start_time).getTime() : Date.now(),
+                endTime: record.end_time ? new Date(record.end_time).getTime() : Date.now(),
+                totalTime: record.total_time_ms || 0,
+                avgQuality: record.avg_quality || 0,
+                finalConsensus: record.final_consensus || 0,
+                iterationsUsed: record.iterations_used || 0,
+                breakthroughs: record.breakthroughs || 0,
+                efficiency: record.efficiency || 0,
+                success: record.success || false
+            }));
+            
             this.updateDashboard();
             this.updateSessionsTable();
+        } catch (error) {
+            console.error('Failed to load analytics data from database:', error);
+            // Initialize with empty data if database load fails
+            this.sessions = [];
         }
     }
 }

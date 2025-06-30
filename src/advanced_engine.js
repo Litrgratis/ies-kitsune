@@ -5,6 +5,9 @@
 
 import { computeTFIDF } from './utils.js';
 import { apiCircuitBreaker } from './circuit_breaker.js';
+import { callAPI, callAPIWithRetry, getAPIStatus } from './api.js';
+import { responseCache } from './cache.js';
+import { metricsCollector } from './metrics.js';
 
 export class AdvancedAIEngine {
     constructor(options = {}) {
@@ -173,7 +176,7 @@ export class AdvancedAIEngine {
     }
 
     /**
-     * Pobiera wkład od konkretnej roli AI
+     * Pobiera wkład od konkretnej roli AI z użyciem prawdziwego API
      */
     async getAIContribution(roleKey, problemStatement, existingContributions) {
         const role = this.roles[roleKey];
@@ -183,37 +186,286 @@ export class AdvancedAIEngine {
             existingContributions
         );
 
+        const startTime = Date.now();
+        const builderMapping = {
+            'architect': 'builder1',
+            'catalyst': 'builder2', 
+            'synthesizer': 'synthesizer',
+            'evaluator': 'evaluator'
+        };
+        
+        const builderName = builderMapping[roleKey] || roleKey;
+        
         try {
-            return await apiCircuitBreaker.execute(async () => {
-                const response = await fetch('/v1/chat/completions', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        builder: roleKey,
-                        topic: problemStatement,
-                        prompt: contextualPrompt,
-                        temperature: roleKey === 'catalyst' ? 0.8 : 0.6,
-                        max_tokens: 300
-                    })
-                });
-
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}`);
-                }
-
-                const data = await response.json();
-                return {
-                    content: data.response,
-                    quality: data.quality || 7.0,
-                    confidence: data.confidence || 0.7,
-                    timestamp: Date.now()
-                };
+            console.log(`🎯 Getting AI contribution from ${role.name} (${builderName})...`);
+            
+            // Check API status first
+            const apiStatus = getAPIStatus();
+            if (!apiStatus.realAIEnabled && !apiStatus.mockMode) {
+                throw new Error('No AI services available - both real AI and mock mode disabled');
+            }
+            
+            // Prepare API call options
+            const options = {
+                temperature: this.getTemperatureForRole(roleKey),
+                maxTokens: this.getMaxTokensForRole(roleKey),
+                model: this.getModelForRole(roleKey),
+                retryDelay: 1000,
+                maxRetries: 2
+            };
+            
+            console.log(`📋 Using options for ${roleKey}:`, options);
+            
+            // Use circuit breaker with real API call
+            const result = await apiCircuitBreaker.execute(async () => {
+                return await callAPIWithRetry(
+                    builderName,
+                    problemStatement,
+                    contextualPrompt,
+                    apiCircuitBreaker,
+                    options
+                );
             });
             
+            const latency = Date.now() - startTime;
+            console.log(`✅ Got contribution from ${role.name} in ${latency}ms`);
+            
+            // Validate and process the result
+            const processedResult = this.processAIResult(result, roleKey, latency);
+            
+            // Record successful contribution metrics
+            this.recordContributionMetrics(roleKey, processedResult, latency, null);
+            
+            return processedResult;
+            
         } catch (error) {
-            console.error(`Failed to get AI contribution for ${roleKey}:`, error);
-            throw error;
+            const latency = Date.now() - startTime;
+            console.error(`❌ Failed to get AI contribution from ${role.name}:`, error.message);
+            
+            // Record error metrics
+            this.recordContributionMetrics(roleKey, null, latency, error);
+            
+            // Try fallback strategies
+            return await this.handleContributionError(roleKey, problemStatement, contextualPrompt, error);
         }
+    }
+    
+    /**
+     * Przetwarza wynik z API AI
+     */
+    processAIResult(result, roleKey, latency) {
+        if (!result || !result.response) {
+            throw new Error(`Invalid AI response structure for ${roleKey}`);
+        }
+        
+        // Validate response quality
+        const content = result.response.trim();
+        if (content.length < 20) {
+            console.warn(`⚠️ Short response from ${roleKey}: ${content.length} characters`);
+        }
+        
+        // Apply role-specific quality adjustments
+        const adjustedQuality = this.adjustQualityForRole(result.quality || 7.0, roleKey);
+        const adjustedConfidence = this.adjustConfidenceForRole(result.confidence || 0.7, roleKey);
+        
+        return {
+            content: content,
+            quality: adjustedQuality,
+            confidence: adjustedConfidence,
+            timestamp: Date.now(),
+            latency: latency,
+            provider: result.provider || 'unknown',
+            model: result.model || 'unknown',
+            usage: result.usage || {},
+            cached: result.cached || false,
+            fallback: result.fallback || false
+        };
+    }
+    
+    /**
+     * Obsługuje błędy w uzyskiwaniu wkładu AI
+     */
+    async handleContributionError(roleKey, problemStatement, contextualPrompt, originalError) {
+        const role = this.roles[roleKey];
+        console.log(`🔄 Attempting error recovery for ${role.name}...`);
+        
+        // Strategy 1: Try with simplified prompt
+        try {
+            console.log(`📝 Trying simplified prompt for ${roleKey}...`);
+            const simplifiedPrompt = this.createSimplifiedPrompt(role, problemStatement);
+            
+            const result = await callAPI(
+                roleKey,
+                problemStatement,
+                simplifiedPrompt,
+                apiCircuitBreaker,
+                { 
+                    temperature: 0.5, 
+                    maxTokens: 200,
+                    provider: 'mock' // Force mock for fallback
+                }
+            );
+            
+            if (result && result.response) {
+                console.log(`✅ Fallback successful for ${roleKey} with simplified prompt`);
+                return this.processAIResult({
+                    ...result,
+                    fallback: true,
+                    fallbackStrategy: 'simplified_prompt'
+                }, roleKey, 0);
+            }
+        } catch (fallbackError) {
+            console.warn(`⚠️ Simplified prompt fallback failed for ${roleKey}:`, fallbackError.message);
+        }
+        
+        // Strategy 2: Use cached response if available
+        try {
+            console.log(`💾 Checking cache for similar ${roleKey} contribution...`);
+            const cachedResult = responseCache.get(roleKey, problemStatement, contextualPrompt);
+            if (cachedResult && cachedResult.response) {
+                console.log(`✅ Using cached response for ${roleKey}`);
+                return {
+                    ...cachedResult,
+                    fallback: true,
+                    fallbackStrategy: 'cached_response',
+                    timestamp: Date.now()
+                };
+            }
+        } catch (cacheError) {
+            console.warn(`⚠️ Cache fallback failed for ${roleKey}:`, cacheError.message);
+        }
+        
+        // Strategy 3: Generate rule-based response
+        console.log(`🤖 Generating rule-based fallback for ${roleKey}...`);
+        const fallbackContent = this.generateRuleBasedResponse(roleKey, problemStatement);
+        
+        return {
+            content: fallbackContent,
+            quality: 4.0, // Lower quality for fallback
+            confidence: 0.3,
+            timestamp: Date.now(),
+            latency: 0,
+            provider: 'fallback',
+            model: 'rule-based',
+            usage: { total_tokens: 0 },
+            cached: false,
+            fallback: true,
+            fallbackStrategy: 'rule_based',
+            originalError: originalError.message
+        };
+    }
+    
+    /**
+     * Generuje odpowiedź opartą na regułach jako ostatnią deską ratunku
+     */
+    generateRuleBasedResponse(roleKey, problemStatement) {
+        const templates = {
+            architect: `W odniesieniu do problemu "${problemStatement}", kluczowe jest przeprowadzenie systematycznej analizy strukturalnej. Należy zidentyfikować główne komponenty problemu, ich wzajemne zależności oraz potencjalne punkty interwencji. Rekomendowane jest podejście etapowe z jasno określonymi milestone'ami.`,
+            
+            catalyst: `Problem "${problemStatement}" wymaga kreatywnego podejścia. Warto rozważyć alternatywne perspektywy i zakwestionować podstawowe założenia. Sugeruję eksplorację niestandardowych rozwiązań, wykorzystanie analogii z innych dziedzin oraz aplikację metod design thinking.`,
+            
+            synthesizer: `Na podstawie analizy problemu "${problemStatement}", optymalne rozwiązanie powinno integrować różne podejścia w spójną całość. Kluczowe jest znalezienie równowagi między praktycznością a innowacyjnością, uwzględniając zarówno ograniczenia jak i możliwości.`,
+            
+            evaluator: `Oceniając rozwiązania dla "${problemStatement}", należy wziąć pod uwagę wykonalność, koszty implementacji, potencjalne ryzyka oraz oczekiwane korzyści. Rekomendowana jest analiza SWOT oraz opracowanie planu zarządzania ryzykiem.`
+        };
+        
+        return templates[roleKey] || `Analiza problemu "${problemStatement}" wymaga dalszego badania i konsultacji z ekspertami w tej dziedzinie.`;
+    }
+    
+    /**
+     * Tworzy uproszczony prompt dla strategii fallback
+     */
+    createSimplifiedPrompt(role, problemStatement) {
+        return `${role.prompt}\n\nProblem: ${problemStatement}\n\nProvide a brief analysis focusing on ${role.expertise[0]}.`;
+    }
+    
+    /**
+     * Rejestruje metryki wkładu
+     */
+    recordContributionMetrics(roleKey, result, latency, error) {
+        try {
+            const metrics = {
+                role: roleKey,
+                latency: latency,
+                success: !error,
+                error: error?.message,
+                quality: result?.quality || 0,
+                confidence: result?.confidence || 0,
+                provider: result?.provider || 'unknown',
+                fallback: result?.fallback || false,
+                timestamp: Date.now()
+            };
+            
+            // Could integrate with metrics collector here
+            console.log(`📊 Contribution metrics for ${roleKey}:`, metrics);
+        } catch (metricsError) {
+            console.warn(`⚠️ Failed to record metrics for ${roleKey}:`, metricsError.message);
+        }
+    }
+    
+    /**
+     * Pobiera temperaturę odpowiednią dla roli
+     */
+    getTemperatureForRole(roleKey) {
+        const temperatures = {
+            architect: 0.4,    // Structured, analytical
+            catalyst: 0.8,     // Creative, innovative  
+            synthesizer: 0.6,  // Balanced integration
+            evaluator: 0.3     // Precise, critical
+        };
+        return temperatures[roleKey] || 0.6;
+    }
+    
+    /**
+     * Pobiera maksymalną liczbę tokenów dla roli
+     */
+    getMaxTokensForRole(roleKey) {
+        const tokenLimits = {
+            architect: 400,     // Detailed analysis
+            catalyst: 350,      // Creative ideas
+            synthesizer: 450,   // Comprehensive synthesis
+            evaluator: 300      // Focused evaluation
+        };
+        return tokenLimits[roleKey] || 350;
+    }
+    
+    /**
+     * Pobiera preferowany model dla roli
+     */
+    getModelForRole(roleKey) {
+        // Could implement role-specific model preferences
+        // For now, use default from config
+        return null; // Will use default from API config
+    }
+    
+    /**
+     * Dostosowuje jakość dla konkretnej roli
+     */
+    adjustQualityForRole(quality, roleKey) {
+        const adjustments = {
+            architect: 1.1,     // Boost analytical responses
+            catalyst: 0.9,      // Creative responses may be less structured
+            synthesizer: 1.2,   // Integration is highly valued
+            evaluator: 1.0      // Neutral evaluation
+        };
+        
+        const adjusted = quality * (adjustments[roleKey] || 1.0);
+        return Math.min(10, Math.max(1, adjusted));
+    }
+    
+    /**
+     * Dostosowuje pewność dla konkretnej roli
+     */
+    adjustConfidenceForRole(confidence, roleKey) {
+        const adjustments = {
+            architect: 1.0,     // Neutral
+            catalyst: 0.9,      // Creative ideas less certain
+            synthesizer: 1.1,   // Integration builds confidence
+            evaluator: 1.0      // Neutral evaluation
+        };
+        
+        const adjusted = confidence * (adjustments[roleKey] || 1.0);
+        return Math.min(1.0, Math.max(0.1, adjusted));
     }
 
     /**

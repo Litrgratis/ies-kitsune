@@ -1,0 +1,186 @@
+groups:
+  - name: api_performance
+    rules:
+      # High API Latency Alert
+      - alert: HighAPILatency
+        expr: histogram_quantile(0.95, http_request_duration_seconds_bucket) > 2
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "High API latency detected"
+          description: "95th percentile latency is {{ $value }}s for {{ $labels.method }} {{ $labels.route }}"
+
+      # Critical API Latency Alert
+      - alert: CriticalAPILatency
+        expr: histogram_quantile(0.95, http_request_duration_seconds_bucket) > 5
+        for: 2m
+        labels:
+          severity: critical
+          service: ies-kitsune-api
+        annotations:
+          summary: "Critical API latency detected"
+          description: "95th percentile latency is {{ $value }}s for {{ $labels.method }} {{ $labels.route }}"
+
+      # High Error Rate Alert
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status_code=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "High error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.method }} {{ $labels.route }}"
+
+      # Critical Error Rate Alert
+      - alert: CriticalErrorRate
+        expr: rate(http_requests_total{status_code=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          service: ies-kitsune-api
+        annotations:
+          summary: "Critical error rate detected"
+          description: "Error rate is {{ $value | humanizePercentage }} for {{ $labels.method }} {{ $labels.route }}"
+
+  - name: database_performance
+    rules:
+      # Slow Database Queries
+      - alert: SlowDatabaseQueries
+        expr: histogram_quantile(0.95, db_query_duration_seconds_bucket) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-db
+        annotations:
+          summary: "Slow database queries detected"
+          description: "95th percentile query duration is {{ $value }}s for {{ $labels.query_type }} on {{ $labels.table }}"
+
+      # Database Connection Pool Exhaustion
+      - alert: DatabaseConnectionPoolHigh
+        expr: (db_connections_active / (db_connections_active + db_connections_idle)) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-db
+        annotations:
+          summary: "Database connection pool usage high"
+          description: "Connection pool usage is {{ $value | humanizePercentage }}"
+
+      # Database Connection Pool Critical
+      - alert: DatabaseConnectionPoolCritical
+        expr: (db_connections_active / (db_connections_active + db_connections_idle)) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          service: ies-kitsune-db
+        annotations:
+          summary: "Database connection pool near exhaustion"
+          description: "Connection pool usage is {{ $value | humanizePercentage }}"
+
+  - name: system_resources
+    rules:
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: (memory_usage_bytes{type="heapUsed"} / memory_usage_bytes{type="heapTotal"}) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+
+      # Critical Memory Usage
+      - alert: CriticalMemoryUsage
+        expr: (memory_usage_bytes{type="heapUsed"} / memory_usage_bytes{type="heapTotal"}) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          service: ies-kitsune-api
+        annotations:
+          summary: "Critical memory usage detected"
+          description: "Memory usage is {{ $value | humanizePercentage }}"
+
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: rate(process_cpu_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value | humanizePercentage }}"
+
+  - name: ai_performance
+    rules:
+      # Slow AI Requests
+      - alert: SlowAIRequests
+        expr: histogram_quantile(0.95, ai_request_duration_seconds_bucket) > 15
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-ai
+        annotations:
+          summary: "Slow AI requests detected"
+          description: "95th percentile AI request duration is {{ $value }}s for {{ $labels.builder_type }} using {{ $labels.model }}"
+
+      # High AI Error Rate
+      - alert: HighAIErrorRate
+        expr: rate(ai_requests_total{status="error"}[5m]) / rate(ai_requests_total[5m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-ai
+        annotations:
+          summary: "High AI error rate detected"
+          description: "AI error rate is {{ $value | humanizePercentage }} for {{ $labels.builder_type }}"
+
+  - name: application_health
+    rules:
+      # Service Down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: ies-kitsune-api
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.instance }} has been down for more than 1 minute"
+
+      # No Recent Requests
+      - alert: NoRecentRequests
+        expr: rate(http_requests_total[10m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "No recent requests received"
+          description: "No HTTP requests received in the last 15 minutes"
+
+      # High Number of Active Sessions
+      - alert: HighActiveSessions
+        expr: sessions_active > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: ies-kitsune-api
+        annotations:
+          summary: "High number of active sessions"
+          description: "{{ $value }} active sessions detected"
+
+      # SSE Connection Issues
+      - alert: SSEConnectionDrops
+        expr: rate(sse_connections_active[5m]) < -10
+        for: 5m
+        labels:
+          severity: warning
+          service: ies-kitsune-sse
+        annotations:
+          summary: "SSE connections dropping rapidly"
+          description: "SSE connections are dropping at a rate of {{ $value }}/minute"

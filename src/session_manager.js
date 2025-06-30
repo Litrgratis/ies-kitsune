@@ -1,9 +1,11 @@
 /**
  * Smart Session Management System
  * Zarządza sesjami rozwiązywania problemów z persistence, recovery i smart resume
+ * REFACTORED: Now uses PostgreSQL instead of localStorage for persistence
  */
 
 import { analytics } from './analytics.js';
+import { query, pool } from './db.js';
 
 export class SessionManager {
     constructor() {
@@ -11,38 +13,95 @@ export class SessionManager {
         this.sessionHistory = [];
         this.autoSaveInterval = null;
         this.maxSessions = 50; // Limit stored sessions
+        this.currentUserId = 1; // TODO: Get from auth system
         
         this.initializeStorage();
         this.setupAutoRecovery();
     }
 
     /**
-     * Inicjalizuje storage i ładuje saved sessions
+     * Inicjalizuje storage i ładuje saved sessions z PostgreSQL
      */
-    initializeStorage() {
-        // Load session history from localStorage
-        const stored = localStorage.getItem('ies_sessions');
-        if (stored) {
-            try {
-                this.sessionHistory = JSON.parse(stored);
-                console.log(`📂 Loaded ${this.sessionHistory.length} sessions from storage`);
-            } catch (error) {
-                console.error('Failed to load sessions:', error);
-                this.sessionHistory = [];
-            }
-        }
+    async initializeStorage() {
+        try {
+            // Load session history from PostgreSQL - get recent completed sessions
+            const historyResult = await query(`
+                SELECT s.*, 
+                       array_agg(
+                           json_build_object(
+                               'number', si.iteration_number,
+                               'timestamp', extract(epoch from si.created_at) * 1000,
+                               'sessionTime', si.session_time_ms,
+                               'data', si.iteration_data
+                           ) ORDER BY si.iteration_number
+                       ) as iterations
+                FROM sessions s
+                LEFT JOIN session_iterations si ON s.id = si.session_id
+                WHERE s.user_id = $1 AND s.status = 'completed'
+                GROUP BY s.id
+                ORDER BY s.end_time DESC
+                LIMIT $2
+            `, [this.currentUserId, this.maxSessions]);
+            
+            this.sessionHistory = historyResult.rows.map(row => ({
+                id: row.session_id,
+                problem: row.problem_statement,
+                startTime: new Date(row.start_time).getTime(),
+                endTime: row.end_time ? new Date(row.end_time).getTime() : null,
+                lastSaveTime: new Date(row.updated_at).getTime(),
+                iterations: row.iterations.filter(iter => iter.number !== null) || [],
+                status: row.status,
+                progress: row.progress_data || { currentStage: 'completed', completion: 100 },
+                metadata: row.metadata || {},
+                metrics: row.metrics || {},
+                completed: row.status === 'completed'
+            }));
+            
+            console.log(`📂 Loaded ${this.sessionHistory.length} sessions from PostgreSQL`);
 
-        // Load current session if exists
-        const currentStored = localStorage.getItem('ies_current_session');
-        if (currentStored) {
-            try {
-                this.currentSession = JSON.parse(currentStored);
-                console.log(`🔄 Recovered current session: ${this.currentSession.problem.substring(0, 30)}...`);
+            // Load current active session if exists
+            const currentResult = await query(`
+                SELECT s.*, 
+                       array_agg(
+                           json_build_object(
+                               'number', si.iteration_number,
+                               'timestamp', extract(epoch from si.created_at) * 1000,
+                               'sessionTime', si.session_time_ms,
+                               'data', si.iteration_data
+                           ) ORDER BY si.iteration_number
+                       ) as iterations
+                FROM sessions s
+                LEFT JOIN session_iterations si ON s.id = si.session_id
+                WHERE s.user_id = $1 AND s.status IN ('active', 'paused')
+                GROUP BY s.id
+                ORDER BY s.updated_at DESC
+                LIMIT 1
+            `, [this.currentUserId]);
+            
+            if (currentResult.rows.length > 0) {
+                const row = currentResult.rows[0];
+                this.currentSession = {
+                    id: row.session_id,
+                    problem: row.problem_statement,
+                    startTime: new Date(row.start_time).getTime(),
+                    endTime: row.end_time ? new Date(row.end_time).getTime() : null,
+                    lastSaveTime: new Date(row.updated_at).getTime(),
+                    iterations: row.iterations.filter(iter => iter.number !== null) || [],
+                    status: row.status,
+                    progress: row.progress_data || { currentStage: 'initialization', completion: 0 },
+                    metadata: row.metadata || {},
+                    metrics: row.metrics || {},
+                    completed: false,
+                    pausedAt: row.status === 'paused' ? new Date(row.updated_at).getTime() : null
+                };
+                
+                console.log(`🔄 Recovered current session from PostgreSQL: ${this.currentSession.problem.substring(0, 30)}...`);
                 this.showRecoveryNotification();
-            } catch (error) {
-                console.error('Failed to load current session:', error);
-                this.currentSession = null;
             }
+        } catch (error) {
+            console.error('Failed to load sessions from PostgreSQL:', error);
+            this.sessionHistory = [];
+            this.currentSession = null;
         }
     }
 
@@ -189,7 +248,7 @@ export class SessionManager {
     /**
      * Kończy current session
      */
-    completeSession(finalMetrics = {}) {
+    async completeSession(finalMetrics = {}) {
         if (!this.currentSession) {
             console.warn('No active session to complete');
             return;
@@ -211,8 +270,8 @@ export class SessionManager {
             }
         };
 
-        // Save to history
-        this.saveSessionToHistory(completedSession);
+        // Save to PostgreSQL
+        await this.saveSessionToDatabase(completedSession);
         
         // Record in analytics
         analytics.recordSession(completedSession);
@@ -220,7 +279,6 @@ export class SessionManager {
         // Clear current session
         this.currentSession = null;
         this.stopAutoSave();
-        localStorage.removeItem('ies_current_session');
         
         this.updateSessionUI();
         this.showCompletionNotification(completedSession);
@@ -302,12 +360,24 @@ export class SessionManager {
     /**
      * Odrzuca current session
      */
-    discardCurrentSession() {
+    async discardCurrentSession() {
         if (this.currentSession) {
-            console.log(`🗑️ Discarded session: ${this.currentSession.id}`);
+            try {
+                // Mark session as discarded in database
+                await query(`
+                    UPDATE sessions 
+                    SET status = 'discarded', 
+                        updated_at = NOW()
+                    WHERE session_id = $1 AND user_id = $2
+                `, [this.currentSession.id, this.currentUserId]);
+                
+                console.log(`🗑️ Discarded session: ${this.currentSession.id}`);
+            } catch (error) {
+                console.error('Failed to discard session in database:', error);
+            }
+            
             this.currentSession = null;
             this.stopAutoSave();
-            localStorage.removeItem('ies_current_session');
             this.updateSessionUI();
         }
     }
@@ -315,7 +385,7 @@ export class SessionManager {
     /**
      * Zapisuje session do historii
      */
-    saveSessionToHistory(session) {
+    async saveSessionToHistory(session) {
         this.sessionHistory.unshift(session);
         
         // Limit history size
@@ -323,22 +393,18 @@ export class SessionManager {
             this.sessionHistory = this.sessionHistory.slice(0, this.maxSessions);
         }
         
-        // Save to localStorage
-        try {
-            localStorage.setItem('ies_sessions', JSON.stringify(this.sessionHistory));
-        } catch (error) {
-            console.error('Failed to save session history:', error);
-        }
+        // Save to PostgreSQL database
+        await this.saveSessionToDatabase(session);
     }
 
     /**
      * Zapisuje current session
      */
-    saveCurrentSession() {
+    async saveCurrentSession() {
         if (!this.currentSession) return;
         
         try {
-            localStorage.setItem('ies_current_session', JSON.stringify(this.currentSession));
+            await this.saveSessionToDatabase(this.currentSession);
         } catch (error) {
             console.error('Failed to save current session:', error);
         }
@@ -551,9 +617,78 @@ export class SessionManager {
         return this.sessionHistory.find(session => session.id === id);
     }
 
-    deleteSession(id) {
+    /**
+     * Saves session data to PostgreSQL database
+     */
+    async saveSessionToDatabase(session) {
+        try {
+            // Upsert session data
+            await query(`
+                INSERT INTO sessions (
+                    session_id, user_id, problem_statement, start_time, end_time,
+                    status, progress_data, metadata, metrics, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW())
+                ON CONFLICT (session_id, user_id) 
+                DO UPDATE SET
+                    problem_statement = EXCLUDED.problem_statement,
+                    end_time = EXCLUDED.end_time,
+                    status = EXCLUDED.status,
+                    progress_data = EXCLUDED.progress_data,
+                    metadata = EXCLUDED.metadata,
+                    metrics = EXCLUDED.metrics,
+                    updated_at = NOW()
+            `, [
+                session.id,
+                this.currentUserId,
+                session.problem,
+                new Date(session.startTime),
+                session.endTime ? new Date(session.endTime) : null,
+                session.status,
+                JSON.stringify(session.progress),
+                JSON.stringify(session.metadata),
+                JSON.stringify(session.metrics)
+            ]);
+
+            // Save iterations
+            if (session.iterations && session.iterations.length > 0) {
+                for (const iteration of session.iterations) {
+                    await query(`
+                        INSERT INTO session_iterations (
+                            session_id, iteration_number, session_time_ms, 
+                            iteration_data, created_at
+                        ) VALUES ((SELECT id FROM sessions WHERE session_id = $1 AND user_id = $2), $3, $4, $5, $6)
+                        ON CONFLICT (session_id, iteration_number)
+                        DO UPDATE SET
+                            session_time_ms = EXCLUDED.session_time_ms,
+                            iteration_data = EXCLUDED.iteration_data
+                    `, [
+                        session.id,
+                        this.currentUserId,
+                        iteration.number,
+                        iteration.sessionTime || 0,
+                        JSON.stringify(iteration.data || iteration),
+                        new Date(iteration.timestamp)
+                    ]);
+                }
+            }
+
+            console.log(`💾 Session ${session.id} saved to PostgreSQL`);
+        } catch (error) {
+            console.error('Failed to save session to database:', error);
+            throw error;
+        }
+    }
+
+    async deleteSession(id) {
         this.sessionHistory = this.sessionHistory.filter(session => session.id !== id);
-        localStorage.setItem('ies_sessions', JSON.stringify(this.sessionHistory));
+        
+        // Delete from PostgreSQL database
+        try {
+            await query('DELETE FROM sessions WHERE session_id = $1 AND user_id = $2', [id, this.currentUserId]);
+            console.log(`🗑️ Deleted session ${id} from database`);
+        } catch (error) {
+            console.error('Failed to delete session from database:', error);
+        }
     }
 
     exportSessions() {
