@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IES/Kitsune v1.0 - AI Problem Solver</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .timeline-node { transition: all 0.3s ease; }
+        .timeline-node:hover { transform: scale(1.02); }
+        .progress-bar { transition: width 0.5s ease; }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <div class="container mx-auto p-6">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold mb-2">🦊 IES/Kitsune v1.0</h1>
+            <p class="text-gray-400">Inteligentny System Rozwiązywania Problemów</p>
+            <button id="theme-toggle" class="mt-2 px-4 py-2 bg-blue-600 rounded hover:bg-blue-700">
+                Motyw: <span id="current-theme">dark</span>
+            </button>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <!-- Problem Input -->
+            <div class="bg-gray-800 p-6 rounded-lg">
+                <h2 class="text-xl font-semibold mb-4">🎯 Definiowanie Problemu</h2>
+                <textarea 
+                    id="topic-input" 
+                    placeholder="Opisz problem, np. 'Zmniejszenie emisji CO2 o 50% w ciągu 5 lat'"
+                    class="w-full h-24 p-3 bg-gray-900 border border-gray-600 rounded resize-none"
+                ></textarea>
+                <button id="solve-button" class="mt-3 w-full px-4 py-2 bg-green-600 rounded hover:bg-green-700">
+                    🚀 Rozpocznij Rozwiązywanie
+                </button>
+            </div>
+
+            <!-- Progress & Status -->
+            <div class="bg-gray-800 p-6 rounded-lg">
+                <h2 class="text-xl font-semibold mb-4">📊 Postęp</h2>
+                <div class="mb-4">
+                    <div class="bg-gray-700 rounded-full h-4">
+                        <div id="progress-bar" class="progress-bar bg-gradient-to-r from-blue-500 to-green-500 h-4 rounded-full" style="width: 0%"></div>
+                    </div>
+                    <p id="progress-text" class="text-sm text-gray-400 mt-2">Gotowy do startu</p>
+                </div>
+                
+                <!-- SSE Status -->
+                <div class="mb-4">
+                    <h3 class="font-medium mb-2">Status połączenia:</h3>
+                    <span id="sse-status" class="px-2 py-1 bg-gray-700 rounded text-sm">Rozłączony</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Statistics Dashboard -->
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+            <div class="bg-gray-800 p-4 rounded-lg text-center">
+                <h3 class="text-gray-400 text-sm">Wersje</h3>
+                <p id="total-versions" class="text-2xl font-bold">0</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg text-center">
+                <h3 class="text-gray-400 text-sm">Śr. Jakość</h3>
+                <p id="avg-quality" class="text-2xl font-bold">0.0</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg text-center">
+                <h3 class="text-gray-400 text-sm">Konsensus</h3>
+                <p id="avg-consensus" class="text-2xl font-bold">0.0%</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg text-center">
+                <h3 class="text-gray-400 text-sm">Najlepsza</h3>
+                <p id="best-version" class="text-sm">Brak danych</p>
+            </div>
+        </div>
+
+        <!-- Timeline & History -->
+        <div class="mt-6 bg-gray-800 p-6 rounded-lg">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">📈 Historia Ewolucji</h2>
+                <div class="flex gap-2">
+                    <select id="sort-order" class="px-3 py-1 bg-gray-900 border border-gray-600 rounded text-sm">
+                        <option value="desc">Najnowsze</option>
+                        <option value="asc">Najstarsze</option>
+                    </select>
+                    <select id="filter-quality" class="px-3 py-1 bg-gray-900 border border-gray-600 rounded text-sm">
+                        <option value="all">Wszystkie</option>
+                        <option value="high">Wysoka jakość (8+)</option>
+                        <option value="medium">Średnia jakość (6-8)</option>
+                        <option value="low">Niska jakość (&lt;6)</option>
+                    </select>
+                    <button id="export-button" class="px-3 py-1 bg-blue-600 rounded hover:bg-blue-700 text-sm">
+                        📤 Eksport
+                    </button>
+                </div>
+            </div>
+            <div id="idea-history" class="max-h-96 overflow-y-auto">
+                <p class="text-gray-400 text-center">Brak historii - rozpocznij rozwiązywanie problemu</p>
+            </div>
+        </div>
+
+        <!-- SSE Log -->
+        <div class="mt-6 bg-gray-800 p-6 rounded-lg">
+            <h2 class="text-xl font-semibold mb-4">🔄 Logi Czasu Rzeczywistego</h2>
+            <div id="sse-log" class="bg-gray-900 p-4 rounded h-32 overflow-y-auto text-sm font-mono">
+                <div class="text-gray-400">Logi połączenia SSE pojawią się tutaj...</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        // Import modules
+        import { renderStorytellingTimeline, initKitsune } from './src/kitsune.js';
+        import { showExportModal, updateProgressBar, toggleTheme, initSSE } from './src/ui.js';
+        import { callAPI } from './src/api.js';
+        import { computeTFIDF } from './src/utils.js';
+        import { selectBuilderRole } from './src/engine.js';
+        import { aiEngine } from './src/advanced_engine.js';
+        import { analytics } from './src/analytics.js';
+        import { sessionManager } from './src/session_manager.js';
+        import { apiCircuitBreaker } from './src/circuit_breaker.js';
+        import { problemTemplates } from './src/templates.js';
+        import { smartRecommendations } from './src/recommendations.js';
+        import { collaborationSystem } from './src/collaboration.js';
+        import { knowledgeBase } from './src/knowledge_base.js';
+
+        // Initialize application
+        const studio = {
+            problem: '',
+            ideaHistory: [],
+            stats: {
+                evolution: {
+                    quality: 0,
+                    consensus: 0,
+                    breakthroughs: 0,
+                    lastBreakthroughs: 0
+                }
+            },
+            contributions: {
+                synthesizer: ''
+            },
+            circuitBreaker: {
+                failures: 0,
+                lastFailureTime: 0,
+                isOpen: () => false,
+                recordFailure: () => {},
+                recordSuccess: () => {}
+            }
+        };
+
+        // Event listeners
+        document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+        document.getElementById('export-button').addEventListener('click', () => showExportModal(studio));
+        
+        document.getElementById('solve-button').addEventListener('click', async () => {
+            const problem = document.getElementById('topic-input').value.trim();
+            if (!problem) {
+                alert('Proszę opisać problem do rozwiązania');
+                return;
+            }
+            
+            try {
+                // Create new session
+                const session = sessionManager.createSession(problem, {
+                    source: 'manual_input',
+                    userType: 'interactive'
+                });
+                
+                console.log('🚀 Starting advanced problem solving...');
+                
+                // Broadcast problem update to collaborators
+                collaborationSystem.broadcastProblemUpdate(problem);
+                
+                // Update progress callback
+                const progressCallback = (progress) => {
+                    updateProgressBar(progress.stage, progress.progress);
+                    
+                    // Update real-time analytics
+                    analytics.updateRealTimeMetrics({
+                        liveQuality: progress.quality || 7.0,
+                        liveConsensus: progress.consensus || 0.5,
+                        currentIteration: progress.iteration || 1
+                    });
+                    
+                    // Broadcast progress to collaborators
+                    collaborationSystem.broadcastSolutionProgress(progress);
+                };
+                
+                // Start advanced AI problem solving
+                const result = await aiEngine.solveProblem(problem, progressCallback);
+                
+                // Update session with results
+                sessionManager.updateSession({
+                    finalSolution: result.finalSolution,
+                    metrics: result.metrics
+                });
+                
+                // Update studio with results
+                studio.problem = problem;
+                studio.ideaHistory = result.iterations.map((iter, index) => ({
+                    version: iter.number,
+                    timestamp: iter.timestamp,
+                    metrics: {
+                        quality: iter.metrics.quality,
+                        consensus: iter.metrics.consensus
+                    },
+                    contributions: iter.contributions
+                }));
+                
+                studio.stats.evolution = {
+                    quality: result.metrics.avgQuality,
+                    consensus: result.metrics.finalConsensus,
+                    breakthroughs: result.metrics.breakthroughs,
+                    lastBreakthroughs: 0
+                };
+                
+                // Update UI
+                renderStorytellingTimeline(studio.ideaHistory);
+                
+                // Update statistics
+                document.getElementById('total-versions').textContent = result.iterations.length;
+                document.getElementById('avg-quality').textContent = result.metrics.avgQuality.toFixed(1);
+                document.getElementById('avg-consensus').textContent = `${(result.metrics.finalConsensus * 100).toFixed(1)}%`;
+                
+                const bestIteration = result.iterations.reduce((best, current) => 
+                    current.metrics.quality > best.metrics.quality ? current : best
+                );
+                document.getElementById('best-version').innerHTML = 
+                    `Wersja ${bestIteration.number}: Quality ${bestIteration.metrics.quality.toFixed(1)}, Consensus ${(bestIteration.metrics.consensus * 100).toFixed(1)}%`;
+                
+                // Complete session
+                sessionManager.completeSession(result.metrics);
+                
+                // Show final solution
+                showFinalSolution(result.finalSolution);
+                
+                console.log('✅ Problem solving completed successfully!');
+                
+            } catch (error) {
+                console.error('❌ Problem solving failed:', error);
+                updateProgressBar('Błąd podczas rozwiązywania', 0);
+                
+                // Show error notification
+                const notification = document.createElement('div');
+                notification.className = 'fixed top-4 right-4 bg-red-600 text-white p-4 rounded-lg shadow-lg z-50 max-w-sm';
+                notification.innerHTML = `
+                    <div class="flex items-start gap-3">
+                        <span class="text-2xl">❌</span>
+                        <div>
+                            <h4 class="font-semibold mb-1">Problem Solving Failed</h4>
+                            <p class="text-sm text-red-100">${error.message}</p>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(notification);
+                setTimeout(() => notification.remove(), 5000);
+            }
+        });
+        
+        // Function to show final solution
+        function showFinalSolution(solution) {
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50';
+            modal.innerHTML = `
+                <div class="bg-gray-800 p-6 rounded-lg max-w-2xl w-full text-white m-4 max-h-96 overflow-y-auto">
+                    <h3 class="text-xl font-semibold mb-4">🎯 Final Solution</h3>
+                    <div class="mb-4">
+                        <h4 class="font-medium text-green-400 mb-2">Primary Solution:</h4>
+                        <p class="text-gray-300 mb-4">${solution.primary}</p>
+                        
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                            <div>
+                                <h5 class="font-medium text-blue-400 mb-1">Analysis:</h5>
+                                <p class="text-sm text-gray-400">${solution.supporting.analysis || 'N/A'}</p>
+                            </div>
+                            <div>
+                                <h5 class="font-medium text-orange-400 mb-1">Alternatives:</h5>
+                                <p class="text-sm text-gray-400">${solution.supporting.alternatives || 'N/A'}</p>
+                            </div>
+                        </div>
+                        
+                        <div class="mt-4">
+                            <h5 class="font-medium text-purple-400 mb-1">Evaluation:</h5>
+                            <p class="text-sm text-gray-400">${solution.supporting.evaluation || 'N/A'}</p>
+                        </div>
+                    </div>
+                    
+                    <div class="flex justify-between items-center mt-6">
+                        <div class="text-sm text-gray-400">
+                            Confidence: ${(solution.confidence * 100).toFixed(1)}% | 
+                            Consensus: ${(solution.consensus * 100).toFixed(1)}% | 
+                            Iterations: ${solution.iterationsUsed}
+                        </div>
+                        <button id="close-solution" class="px-4 py-2 bg-blue-600 rounded hover:bg-blue-700">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+            modal.querySelector('#close-solution').addEventListener('click', () => modal.remove());
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.remove();
+            });
+        }
+
+        // Initialize SSE connection
+        initSSE();
+        
+        // Load saved theme
+        const savedTheme = localStorage.getItem('theme');
+        if (savedTheme === 'light') {
+            document.documentElement.classList.remove('dark');
+            document.getElementById('current-theme').textContent = 'light';
+        }
+
+        // Initialize templates and recommendations after DOM is ready
+        setTimeout(() => {
+            // Create templates browser
+            problemTemplates.createTemplatesBrowser();
+            problemTemplates.renderRecentTemplates();
+            
+            // Initialize recommendations (this will create UI after analytics dashboard)
+            // smartRecommendations is already initialized in constructor
+            
+            console.log('✨ Templates and recommendations initialized!');
+        }, 1000);
+
+        console.log('🦊 IES/Kitsune v1.0 załadowany pomyślnie!');
+    </script>
+</body>
+</html>

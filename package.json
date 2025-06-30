@@ -1,11 +1,32 @@
 {
   "name": "ies-kitsune",
   "version": "1.0.0",
-  "description": "IES/Kitsune project for problem-solving",
+  "description": "IES/Kitsune v1.0 - Inteligentny System Rozwiązywania Problemów AI",
+  "main": "index.html",
+  "type": "module",
   "dependencies": {
-    "express": "^4.17.1"
+    "express": "^4.18.2",
+    "sqlite3": "^5.1.6",
+    "cors": "^2.8.5",
+    "helmet": "^7.0.0",
+    "rate-limiter-flexible": "^2.4.1"
+  },
+  "devDependencies": {
+    "jest": "^29.5.0",
+    "supertest": "^6.3.3",
+    "eslint": "^8.42.0"
   },
   "scripts": {
-    "start": "node src/mock_server.js"
+    "start": "node src/mock_server.js",
+    "dev": "node --watch src/mock_server.js",
+    "test": "jest",
+    "lint": "eslint src/ tests/",
+    "build": "echo 'Building production version...' && npm run lint && npm run test"
+  },
+  "keywords": ["AI", "problem-solving", "consensus", "TF-IDF", "collaboration"],
+  "author": "IES/Kitsune Team",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
   }
 }
